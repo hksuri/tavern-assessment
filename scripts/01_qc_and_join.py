@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import os, argparse, pandas as pd, numpy as np
 from utils import ensure_dir, standardized_mean_diff
@@ -24,16 +23,54 @@ def main(data_dir, out_dir):
     transcripts = md[["video_id","text"]].copy()
     transcripts.to_csv(os.path.join(out_dir, "transcripts.csv"), index=False)
 
-    # Quick balance check overall
+    # Balance check: numeric SMDs + categorical proportion diffs
     treated = rct[rct["treated"]==1]
     control = rct[rct["treated"]==0]
-    balance_rows = []
-    num_cols = ["partisanship","democratic_party_fav","republican_party_fav","trump_fav","biden_fav"]
-    for col in num_cols:
-        if col in rct.columns:
-            smd = standardized_mean_diff(treated[col].values, control[col].values)
-            balance_rows.append({"var": col, "std_mean_diff": smd, "treated_mean": treated[col].mean(), "control_mean": control[col].mean()})
-    bal_df = pd.DataFrame(balance_rows).sort_values("std_mean_diff", key=lambda s: s.abs(), ascending=False)
+
+    covars = [
+        "partisanship","democratic_party_fav","republican_party_fav",
+        "trump_fav","biden_fav","vote_pres_2020","vote_pres_2024"
+    ]
+    covars = [c for c in covars if c in rct.columns]
+
+    rows = []
+    for col in covars:
+        s = rct[col]
+        if pd.api.types.is_numeric_dtype(s):
+            # numeric: SMD
+            smd = standardized_mean_diff(
+                treated[col].astype(float).values,
+                control[col].astype(float).values
+            )
+            rows.append({
+                "var": col,
+                "type": "numeric",
+                "metric": "std_mean_diff",
+                "value": smd,
+                "treated_mean": treated[col].mean(),
+                "control_mean": control[col].mean()
+            })
+        else:
+            # categorical: per-level proportion difference (treated - control)
+            levels = s.dropna().unique().tolist()
+            for lvl in levels:
+                p_t = (treated[col] == lvl).mean()
+                p_c = (control[col] == lvl).mean()
+                rows.append({
+                    "var": f"{col}=={lvl}",
+                    "type": "categorical",
+                    "metric": "prop_diff",
+                    "value": p_t - p_c,
+                    "treated_prop": p_t,
+                    "control_prop": p_c
+                })
+
+    bal_df = pd.DataFrame(rows)
+    # Order: numeric first by |value|, then categorical by |value|
+    bal_df = pd.concat([
+        bal_df[bal_df["type"]=="numeric"].sort_values("value", key=lambda s: s.abs(), ascending=False),
+        bal_df[bal_df["type"]=="categorical"].sort_values("value", key=lambda s: s.abs(), ascending=False)
+    ], ignore_index=True)
     bal_df.to_csv(os.path.join(out_dir, "balance_overall.csv"), index=False)
 
     # Per-video counts
@@ -42,11 +79,11 @@ def main(data_dir, out_dir):
     vc = vc.reset_index()
     vc.to_csv(os.path.join(out_dir, "per_video_counts.csv"), index=False)
 
-    # Join RCT with transcripts (inner join on video_id for treated rows)
+    # Join RCT with transcripts (left join)
     rct_with_text = rct.merge(transcripts, on="video_id", how="left")
     rct_with_text.to_csv(os.path.join(out_dir, "rct_with_text.csv"), index=False)
 
-    # Save a tiny EDA summary
+    # Small EDA summary
     summary = {
         "n_rows_rct": len(rct),
         "n_rows_maxdiff": len(md),

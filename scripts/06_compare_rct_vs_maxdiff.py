@@ -3,6 +3,8 @@
 import os, argparse, pandas as pd, numpy as np
 import matplotlib.pyplot as plt
 from utils import ensure_dir, bh_fdr
+import math
+from scipy.stats import norm
 
 def main(out_dir, figures_dir):
     ensure_dir(out_dir); ensure_dir(figures_dir)
@@ -15,11 +17,17 @@ def main(out_dir, figures_dir):
     pear = df[["shrunk_effect","maxdiff_mean"]].corr().iloc[0,1]
     spear = df[["shrunk_effect","maxdiff_mean"]].corr(method="spearman").iloc[0,1]
 
-    # Simple z-test pvals for naive effects vs 0 (normal approx)
+    # z-test on naive effects (or use shrunk_* if you prefer)
     z = df["naive_effect"] / df["naive_se"].replace(0, np.nan)
-    pvals = 2*(1 - 0.5*(1 + np.math.erf(np.abs(z)/np.sqrt(2))))
-    reject, p_adj = bh_fdr(pvals)
-    df["pval"] = pvals
+
+    # Two-sided p-values, vectorized
+    pvals = 2 * norm.sf(np.abs(z))
+    pvals = pd.Series(pvals).fillna(1.0)   # guard any NaNs (e.g., missing/zero SE)
+
+    # FDR adjust
+    reject, p_adj = bh_fdr(pvals.values, alpha=0.05)
+
+    df["pval"] = pvals.values
     df["pval_fdr"] = p_adj
     df["sig_fdr_05"] = reject
 
